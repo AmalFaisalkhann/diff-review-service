@@ -2,7 +2,9 @@
 
 ## Architecture
 
-Python 3.12 / FastAPI / uvicorn, single process, in-memory store.
+Python 3.12 / FastAPI / uvicorn, single process, in-memory store — no DB,
+which is fine for a 48-hour scoring window but is the first thing I'd change
+for anything longer-lived (more on that below).
 
 - `app/diff_parser.py` — splits a unified diff into per-file blocks, parses
   hunks into added-line records tracking the new-file line counter.
@@ -11,10 +13,12 @@ Python 3.12 / FastAPI / uvicorn, single process, in-memory store.
 - `app/mock_provider.py` — the deterministic rule engine (MOCK-001..008,
   MOCK-INJ). Single-line rules are table-driven with regexes/lambdas;
   MOCK-004 (empty catch, which can span lines) scans the joined added-line
-  text per file with an offset→line map.
+  text per file with an offset→line map, since a single-line regex can't
+  catch a catch-block that spans multiple diff lines.
 - `app/llm_provider.py` — same Finding schema, calls a real model via
   `httpx`; raises a typed `LlmUnavailableError` on any failure (missing key,
-  network error, bad response), which the caller turns into a `failed` job.
+  network error, bad response), which the caller turns into a `failed` job
+  instead of crashing anything.
 - `app/store.py` — jobs, content-hash cache, idempotency-key map, and a
   per-job event log with `asyncio.Queue`-based pub/sub for SSE replay.
 - `app/rate_limiter.py` — token bucket, 30/min sustained, burst 30.
@@ -33,9 +37,14 @@ never obeyed.
 
 ## How I verified the cross-cutting behaviors
 
-This is a port of a Node/Express implementation I built and tested first; I
-re-ran the identical curl-driven test suite against this Python version to
-confirm parity, not just "it starts":
+I actually built this twice: a first pass in Node/Express to work through
+the contract, then ported it to Python/FastAPI (this version) once I decided
+I'd rather defend Python in the interview. I re-ran the same curl-driven
+test suite against the Python port to confirm parity, not just "it starts" —
+and then re-verified everything again once it was live on Railway, not just
+locally, since local behavior doesn't guarantee anything about the deployed
+version (auth headers, env vars, and cold starts all behave differently
+once something's actually running behind a real domain).
 
 - **Mock rules**: fed a diff engineered to trip all 9 rules (including a
   multi-line empty catch block and an embedded "ignore previous
@@ -67,6 +76,13 @@ confirm parity, not just "it starts":
 - **llm graceful degradation**: with no `ANTHROPIC_API_KEY` set, a
   `provider: "llm"` job reaches `status: "failed"` with a clear message, and
   `/health` stayed `200` afterward — confirms no crash.
+- **Live deployment**: after deploying to Railway, re-ran the full
+  submit → poll cycle against the public URL (not localhost) with the real
+  bearer token, and got the same `MOCK-007` finding back that I saw locally.
+  This caught one dumb mistake on my end — I initially sent the token
+  without the `Bearer ` prefix in the `Authorization` header and got a
+  `401`, which was a good reminder to actually read the auth contract
+  carefully rather than assume the token alone is enough.
 
 Concurrency (4 slots, 5th queued not failing) is enforced structurally by the
 `running_count` guard and `pump()`/`run_and_release()` in `app/main.py`, but
@@ -76,26 +92,35 @@ hidden.
 
 ## What AI tools I used
 
-Built the Node version first with Claude, iterating against a curl test
-suite until every contract behavior checked out. For this Python port, I had
-Claude translate the tested logic module-by-module (parser, chunker, rule
-engine, provider, store, rate limiter, routes) rather than regenerate from
-the spec — the goal was a faithful port with matching behavior, not a
-from-scratch reimplementation, so I re-ran the same tests to confirm parity
-rather than trusting the translation blind.
+I used Claude for essentially the whole build — writing the diff parser,
+the rule engine, the job store, and the FastAPI routes, then iterating
+against a curl/PowerShell test suite until every contract behavior actually
+checked out, not just looked plausible. I built a Node/Express version
+first, decided I'd rather defend Python in the interview, and had Claude
+port the already-tested logic module-by-module rather than regenerate it
+from the spec — the goal was a faithful port with matching behavior, so I
+re-ran the same tests against the Python version to confirm parity instead
+of trusting the translation blind.
+
+I also used it for the deployment side — debugging PowerShell vs. cmd.exe
+syntax differences, a bad first `git push` that accidentally included the
+whole `venv/` folder (fixed by re-initializing git in the right directory
+with a working `.gitignore`), and working around Render and Fly.io no
+longer having truly free tiers before landing on Railway.
 
 ## An AI suggestion I rejected
 
-Early on, the suggestion was to use FastAPI's `BackgroundTasks` for job
-processing instead of a manual `asyncio.Queue` + concurrency counter. I
-rejected it: `BackgroundTasks` runs after the response is sent but doesn't
-give you a bounded concurrency primitive out of the box — you'd still need a
-semaphore or counter on top of it, and mixing that with FastAPI's task
-scheduling adds a layer of indirection for no real benefit here. A plain
-asyncio queue with an explicit `running_count` guard is more transparent and
-easier to reason about (and to explain in an interview) than leaning on a
-framework feature that doesn't actually solve the concurrency-limit
-requirement by itself.
+Early on, the first suggestion for job processing was FastAPI's built-in
+`BackgroundTasks` instead of a manual `asyncio.Queue` + concurrency counter.
+I pushed back on that: `BackgroundTasks` runs after the response is sent,
+but it doesn't give you a bounded-concurrency primitive on its own — you'd
+still need to bolt on a semaphore or counter to enforce the "max 4
+concurrent" requirement, so it wasn't actually saving complexity, just
+hiding it behind a framework feature I'd have to explain in the interview
+anyway. I asked for a plain `asyncio.Queue` with an explicit
+`running_count` guard instead, since it's something I can point to directly
+and say exactly what it does, rather than "trust me, BackgroundTasks
+handles it."
 
 ## What I'd do next with more time
 
