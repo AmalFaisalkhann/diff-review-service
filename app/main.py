@@ -20,14 +20,16 @@ RATE_LIMIT_PER_MINUTE = 30
 RATE_BURST = 30
 VERSION = "1.0.0"
 
-print("ENV KEYS:", list(os.environ.keys()))
-print("BEARER_TOKEN:", repr(os.environ.get("BEARER_TOKEN")))
+# Check environment variable without exposing secret value
+print("BEARER_TOKEN exists:", bool(os.environ.get("BEARER_TOKEN")))
 
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
+
 if not BEARER_TOKEN:
     raise RuntimeError("FATAL: BEARER_TOKEN env var must be set.")
 
 START_TIME = time.time()
+
 store = Store()
 bucket = TokenBucket(RATE_LIMIT_PER_MINUTE, RATE_BURST)
 
@@ -36,7 +38,6 @@ queue: asyncio.Queue = asyncio.Queue()
 pump_lock = asyncio.Lock()
 
 app = FastAPI()
-
 
 def error_response(status_code: int, code: str, message: str, extra_headers: dict = None):
     return JSONResponse(
