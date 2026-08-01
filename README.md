@@ -1,6 +1,6 @@
 # AI Diff Review Service (Python / FastAPI)
 
-Same contract, same behavior as the Node version — this is a straight port,
+ This is a straight port,
 re-tested end to end. See `CANDIDATE-TASK.md` for the full contract.
 
 ## Run locally
