@@ -20,6 +20,9 @@ RATE_LIMIT_PER_MINUTE = 30
 RATE_BURST = 30
 VERSION = "1.0.0"
 
+print("ENV KEYS:", list(os.environ.keys()))
+print("BEARER_TOKEN:", repr(os.environ.get("BEARER_TOKEN")))
+
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 if not BEARER_TOKEN:
     raise RuntimeError("FATAL: BEARER_TOKEN env var must be set.")
